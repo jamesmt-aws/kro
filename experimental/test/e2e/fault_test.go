@@ -326,90 +326,11 @@ func TestInvalidCELExpressionSurfacesError(t *testing.T) {
 	t.Log("Graph recovered after fixing CEL expression — Compiled=True, Ready=True")
 }
 
-// TestConflictThenSpecChangeResolvesConflict proves that changing the Graph
-// spec to remove the contested field clears the conflict state and triggers
-// a successful re-apply (design 003-ownership § kro's Model: "A template
-// change clears the conflict state and triggers a new apply attempt").
-func TestConflictThenSpecChangeResolvesConflict(t *testing.T) {
-	t.Parallel()
-	ns := createNamespace(t)
-
-	cmGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
-
-	// Establish external ownership on a specific field.
-	applyConfigMapAs(t, ns, "spec-conflict-cm", "external-manager", map[string]string{
-		"contested": "external-value",
-		"shared":    "both-agree",
-	})
-	t.Log("External manager owns 'contested' field")
-
-	// Graph tries to write a different value to the contested field.
-	graph := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "experimental.kro.run/v1alpha1",
-			"kind":       "Graph",
-			"metadata": map[string]any{
-				"name":      "test-fault-spec-resolve",
-				"namespace": ns,
-			},
-			"spec": map[string]any{
-				"nodes": []any{
-					map[string]any{
-						"id": "target",
-						"template": map[string]any{
-							"apiVersion": "v1",
-							"kind":       "ConfigMap",
-							"metadata":   map[string]any{"name": "spec-conflict-cm"},
-							"data": map[string]any{
-								"contested": "graph-value",
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	require.NoError(t, k8sClient.Create(ctx, graph))
-
-	// Wait for Conflict.
-	require.NoError(t, waitForGraphReadyReason(ctx, k8sClient,
-		types.NamespacedName{Name: "test-fault-spec-resolve", Namespace: ns}, "Conflict"))
-	t.Log("Graph shows Conflict")
-
-	// Fix: change the spec to remove the contested field.
-	require.NoError(t, updateWithRetry(ctx, k8sClient, GraphGVK,
-		types.NamespacedName{Name: "test-fault-spec-resolve", Namespace: ns}, func(obj *unstructured.Unstructured) {
-			unstructured.SetNestedSlice(obj.Object, []any{
-				map[string]any{
-					"id": "target",
-					"template": map[string]any{
-						"apiVersion": "v1",
-						"kind":       "ConfigMap",
-						"metadata":   map[string]any{"name": "spec-conflict-cm"},
-						"data": map[string]any{
-							"noncontested": "graph-only-value",
-						},
-					},
-				},
-			}, "spec", "nodes")
-		}))
-	t.Log("Updated spec to remove contested field")
-
-	// Graph should become Ready.
-	require.NoError(t, waitForGraphReady(ctx, k8sClient,
-		types.NamespacedName{Name: "test-fault-spec-resolve", Namespace: ns}))
-
-	// Verify the resource has the Graph's non-contested field.
-	cm := &unstructured.Unstructured{}
-	cm.SetGroupVersionKind(cmGVK)
-	require.NoError(t, k8sClient.Get(ctx,
-		types.NamespacedName{Name: "spec-conflict-cm", Namespace: ns}, cm))
-	data, _, _ := unstructured.NestedStringMap(cm.Object, "data")
-	assert.Equal(t, "graph-only-value", data["noncontested"])
-	// External field should still be present.
-	assert.Equal(t, "external-value", data["contested"])
-	t.Log("Conflict resolved via spec change — Graph and external manager coexist")
-}
+// TestConflictThenSpecChangeResolvesConflict was removed: template nodes now
+// always use ForceOwnership in SSA, so the Conflict state it relied on (from
+// competing SSA field manager) never occurs. Spec-change recovery from real
+// errors is covered by TestCELRuntimeError_RegressionRecovery and
+// TestSystemError_WebhookFaultAndRecovery.
 
 // TestErrorClassification_RegressionCELRuntime proves that a CEL expression
 // that compiles but fails at runtime (division by zero) is classified as a

@@ -408,92 +408,12 @@ func TestPruneManagedCheckOnSpecChange(t *testing.T) {
 	t.Log("CM-B still exists — unrelated nodes unaffected")
 }
 
-// TestPruneSafetyConflictBlocksPrune proves that when a node is in Conflict
-// state (409 from competing SSA field manager), dependent resources that
-// were previously applied are not pruned.
-//
-// Design 005-reconciliation § Node States: Conflict blocks dependents.
-// Design 005-reconciliation § Prune: "Uncertain absence — a dependency is
-// Pending, Conflict, or Error."
-//
-// Setup:
-//   - Pre-create upstream resource owned by external manager
-//   - Create Graph with upstream (will 409) + independent resource
-//   - Graph enters Conflict state. Independent resource is created.
-//   - Verify the independent resource survives despite Conflict on upstream.
-func TestPruneSafetyConflictBlocksPrune(t *testing.T) {
-	t.Parallel()
-	ns := createNamespace(t)
-
-	cmGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
-
-	// Pre-create the upstream resource with an external field manager.
-	// The Graph will try to write a different value and get a 409.
-	applyConfigMapAs(t, ns, "conflict-prune-upstream", "external-manager", map[string]string{
-		"key": "external-value",
-	})
-	t.Log("External manager owns upstream resource")
-
-	// Create Graph: conflicted upstream + independent resource.
-	graph := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "experimental.kro.run/v1alpha1",
-			"kind":       "Graph",
-			"metadata": map[string]any{
-				"name":      "test-prune-conflict",
-				"namespace": ns,
-			},
-			"spec": map[string]any{
-				"nodes": []any{
-					map[string]any{
-						"id": "upstream",
-						"template": map[string]any{
-							"apiVersion": "v1",
-							"kind":       "ConfigMap",
-							"metadata":   map[string]any{"name": "conflict-prune-upstream"},
-							"data":       map[string]any{"key": "graph-wants-different-value"},
-						},
-					},
-					map[string]any{
-						"id": "independent",
-						"template": map[string]any{
-							"apiVersion": "v1",
-							"kind":       "ConfigMap",
-							"metadata":   map[string]any{"name": "conflict-prune-independent"},
-							"data":       map[string]any{"state": "alive"},
-						},
-					},
-				},
-			},
-		},
-	}
-	require.NoError(t, k8sClient.Create(ctx, graph))
-
-	// Wait for Conflict state.
-	require.NoError(t, waitForGraphReadyReason(ctx, k8sClient,
-		types.NamespacedName{Name: "test-prune-conflict", Namespace: ns}, "Conflict"))
-	t.Log("Graph entered Conflict state")
-
-	// Independent resource should be created despite upstream conflict.
-	indep := &unstructured.Unstructured{}
-	indep.SetGroupVersionKind(cmGVK)
-	require.NoError(t, waitForResource(ctx, k8sClient,
-		types.NamespacedName{Name: "conflict-prune-independent", Namespace: ns}, indep))
-	t.Log("Independent resource created despite upstream Conflict")
-
-	// THE KEY ASSERTION: after settling, the independent resource should NOT
-	// be pruned. Conflict is a blocked state — nothing should be pruned
-	// because of it.
-	require.NoError(t, waitForSettle(ctx, k8sClient, GraphGVK,
-		types.NamespacedName{Name: "test-prune-conflict", Namespace: ns}))
-	check := &unstructured.Unstructured{}
-	check.SetGroupVersionKind(cmGVK)
-	err := k8sClient.Get(ctx,
-		types.NamespacedName{Name: "conflict-prune-independent", Namespace: ns}, check)
-	assert.NoError(t, err,
-		"independent resource should NOT be pruned during Conflict state")
-	t.Log("Independent resource survived Conflict — prune safety proved")
-}
+// TestPruneSafetyConflictBlocksPrune was removed: template nodes now always
+// use ForceOwnership in SSA, so the Conflict state it relied on (from
+// competing SSA field manager) never occurs. Prune safety for other blocked
+// states (Pending, Error, SystemError) is still tested by
+// TestPruneSafetyPendingBlocksPrune, TestPruneSafetyErrorBlocksPrune, and
+// TestPruneSafetySystemErrorBlocksPrune.
 
 // TestPruneSweptOnSpecNodeRemoval proves that removing nodes from the Graph
 // spec causes their managed resources to be pruned on the next reconcile.

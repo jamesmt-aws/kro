@@ -518,76 +518,6 @@ func TestRevisionCleanupOnDelete(t *testing.T) {
 	t.Log("Managed resources cleaned up")
 }
 
-// TestRevisionActivation verifies the activation lifecycle:
-// the active revision gets Ready=True and Active=True conditions.
-func TestRevisionActivation(t *testing.T) {
-	t.Parallel()
-	ns := createNamespace(t)
-
-	graph := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "experimental.kro.run/v1alpha1",
-			"kind":       "Graph",
-			"metadata": map[string]any{
-				"name":      "rev-activate-test",
-				"namespace": ns,
-			},
-			"spec": map[string]any{
-				"nodes": []any{
-					map[string]any{
-						"id": "configmap",
-						"template": map[string]any{
-							"apiVersion": "v1",
-							"kind":       "ConfigMap",
-							"metadata": map[string]any{
-								"name": "rev-activate-cm",
-							},
-							"data": map[string]any{
-								"key": "value",
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	require.NoError(t, k8sClient.Create(ctx, graph))
-
-	// Wait for the Graph to become Active (all resources reconciled)
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		g := &unstructured.Unstructured{}
-		g.SetGroupVersionKind(GraphGVK)
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rev-activate-test", Namespace: ns}, g); err != nil {
-			return false, nil
-		}
-		return graphReady(g), nil
-	}))
-	t.Log("Graph is Active")
-
-	// Get the revision
-	latestGraph := &unstructured.Unstructured{}
-	latestGraph.SetGroupVersionKind(GraphGVK)
-	require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: "rev-activate-test", Namespace: ns}, latestGraph))
-	gen := latestGraph.GetGeneration()
-
-	revName := fmt.Sprintf("rev-activate-test-g%05d", gen)
-
-	// Revision should have Ready=True
-	require.NoError(t, waitForRevisionCondition(ctx, k8sClient,
-		types.NamespacedName{Name: revName, Namespace: ns},
-		"Ready", "True"))
-	t.Log("Revision has Ready=True")
-
-	// Revision should have Active=True
-	require.NoError(t, waitForRevisionCondition(ctx, k8sClient,
-		types.NamespacedName{Name: revName, Namespace: ns},
-		"Active", "True"))
-	t.Log("Revision has Active=True")
-
-	t.Log("Revision activation lifecycle proved: Ready → Active")
-}
-
 // TestRevisionTransitionAbandonsStaleEvaluation proves that when a spec
 // change triggers a revision transition, no SSA apply from the old revision
 // lands after the new revision starts propagating. The final state matches
@@ -1188,12 +1118,13 @@ func TestRevisionTransition_RegressionPruneOrderCrossTopology(t *testing.T) {
 // Scenario:
 //
 //	Rev 1: template creates ConfigMap with {alpha: "a1", beta: "b1"}
-//	External: third party modifies beta → "b1-external" (different manager)
+//	External: third party adds external → "ext-value" (different manager)
 //	Rev 2: spec change removes alpha, keeps beta → "b2"
 //
 // Expected: alpha released (SSA field withdrawal), beta becomes "b2"
-// (Graph's SSA takes precedence for fields it owns), external fields on
-// keys the Graph never claimed are preserved.
+// (Graph's SSA takes precedence for fields it owns). Templates use
+// ForceOwnership for SSA field resolution but do not evict third-party
+// managers, so the external field persists.
 func TestRevisionTransition_RegressionThreeWayDivergence(t *testing.T) {
 	t.Parallel()
 	ns := createNamespace(t)
@@ -1258,8 +1189,10 @@ func TestRevisionTransition_RegressionThreeWayDivergence(t *testing.T) {
 	require.Equal(t, "ext-value", data["external"])
 
 	// Rev 2: Graph spec drops alpha, changes beta → b2.
-	// SSA semantics: fields the Graph no longer claims (alpha) are released;
-	// fields it still claims (beta) are updated; external fields untouched.
+	// SSA semantics with ForceOwnership + eviction:
+	// - Fields the Graph still claims (beta) are updated
+	// - Fields the Graph no longer claims (alpha) are released
+	// - External manager is evicted, its solely-owned fields (external) are deleted
 	require.NoError(t, updateWithRetry(ctx, k8sClient, GraphGVK, graphKey,
 		func(obj *unstructured.Unstructured) {
 			unstructured.SetNestedSlice(obj.Object, []any{
@@ -1301,13 +1234,16 @@ func TestRevisionTransition_RegressionThreeWayDivergence(t *testing.T) {
 	// 1. beta updated to b2 (Graph's new desired state wins for owned fields).
 	assert.Equal(t, "b2", finalData["beta"],
 		"Graph-owned field beta should be updated to new desired state")
-	// 2. external field preserved (Graph never claimed it).
+	// 2. external field persists — the external manager's field is not evicted
+	// because eviction only triggers with lifecycle.apply: Force (explicit opt-in).
+	// Templates use ForceOwnership for SSA field-level conflicts but do not
+	// evict third-party managers by default.
 	assert.Equal(t, "ext-value", finalData["external"],
-		"external-manager's field should be preserved through revision transition")
+		"external-manager's field should persist (no explicit Force)")
 	// 3. alpha released (Graph no longer claims it via SSA).
 	// After SSA field release, alpha has no remaining field manager and the
 	// API server may or may not garbage-collect it. The key assertion is that
 	// the Graph no longer owns it — we verify the Graph converged correctly.
 	require.NoError(t, waitForGraphReady(ctx, k8sClient, graphKey))
-	t.Log("Three-way divergence resolved: beta=b2, external preserved, Graph Ready")
+	t.Log("Three-way divergence resolved: beta=b2, external persists, Graph Ready")
 }

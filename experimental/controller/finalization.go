@@ -295,7 +295,7 @@ func (r *GraphReconciler) runFinalization(
 			// Create finalizer resource.
 			logger.Info("creating finalizer resource", "finalizer", finNodeID,
 				"target", target.GetName())
-			applied, applyErr := r.applySSA(ctx, graph, evalMap, watcher, finNodeID, graphpkg.NodeTypeTemplate, eval.effectiveGeneration, false, false)
+			applied, applyErr := r.applySSA(ctx, graph, evalMap, watcher, finNodeID, graphpkg.NodeTypeTemplate, eval.effectiveGeneration, false)
 			if applyErr != nil {
 				return false, keys, fmt.Errorf("creating finalizer resource %s: %w", finNodeID, applyErr)
 			}
@@ -378,7 +378,7 @@ func (r *GraphReconciler) runForEachFinalization(
 			}
 			logger.Info("creating forEach finalizer child",
 				"finalizer", finNode.ID, "name", childObj.GetName())
-			applied, applyErr := r.applySSA(ctx, graph, evalMap, watcher, finNode.ID, graphpkg.NodeTypeTemplate, eval.effectiveGeneration, false, false)
+			applied, applyErr := r.applySSA(ctx, graph, evalMap, watcher, finNode.ID, graphpkg.NodeTypeTemplate, eval.effectiveGeneration, false)
 			if applyErr != nil {
 				return false, createdKeys, fmt.Errorf("creating forEach finalizer child %s/%s: %w", finNode.ID, childObj.GetName(), applyErr)
 			}
