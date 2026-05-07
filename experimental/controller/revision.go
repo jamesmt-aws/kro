@@ -150,6 +150,21 @@ func snapshotNode(node graphpkg.Node) map[string]any {
 			if node.Def != nil {
 				entry["def"] = deepCopyMap(node.Def)
 			}
+		case graphpkg.NodeTypeGauge:
+			if node.Gauge != nil {
+				gaugeMap := map[string]any{
+					"name": node.Gauge.Name,
+					"expr": node.Gauge.Expr,
+				}
+				if len(node.Gauge.Labels) > 0 {
+					labels := make(map[string]any, len(node.Gauge.Labels))
+					for k, v := range node.Gauge.Labels {
+						labels[k] = v
+					}
+					gaugeMap["labels"] = labels
+				}
+				entry["gauge"] = gaugeMap
+			}
 		}
 	}
 	if node.ForEach != nil {

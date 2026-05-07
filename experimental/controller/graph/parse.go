@@ -39,14 +39,15 @@ func ExtractGraphSpec(graphObj map[string]any) (*GraphSpec, error) {
 	return &GraphSpec{Nodes: nodes}, nil
 }
 
-// bodyKeywords enumerates the five mutually-exclusive classification keywords.
+// bodyKeywords enumerates the six mutually-exclusive classification keywords.
 // Exactly one must be set per node. The value shape disambiguates map-vs-expr:
 //   - map[string]any → static body
 //   - string         → CEL expression evaluating to the body at runtime
 //
 // Ref and Watch accept only maps — they are identity-only classifications
-// and have no CEL-as-whole-body form.
-var bodyKeywords = []string{"template", "patch", "ref", "watch", "def"}
+// and have no CEL-as-whole-body form. Gauge accepts only a map with
+// name/expr/labels fields — it has no CEL-as-whole-body form.
+var bodyKeywords = []string{"template", "patch", "ref", "watch", "def", "gauge"}
 
 // reservedWords lists identifiers that must not be used as node IDs or
 // forEach iterator variable names. Limited to CEL language keywords and
@@ -240,6 +241,9 @@ func validateNodeConstraints(node *Node, i int, id string) error {
 	if node.Type() == NodeTypeDef {
 		return fmt.Errorf("node[%d] %q: finalizes is not valid on def nodes (no Kubernetes resource to finalize)", i, id)
 	}
+	if node.Type() == NodeTypeGauge {
+		return fmt.Errorf("node[%d] %q: finalizes is not valid on gauge nodes (no Kubernetes resource to finalize)", i, id)
+	}
 	return nil
 }
 
@@ -397,6 +401,17 @@ func setNodeKeyword(node *Node, kw string, raw any) error {
 		default:
 			return fmt.Errorf("def: expected map or string (CEL expression), got %T", raw)
 		}
+	case "gauge":
+		m, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("gauge: expected map with name/expr/labels fields, got %T", raw)
+		}
+		gauge, err := validateGauge(m)
+		if err != nil {
+			return err
+		}
+		node.Gauge = gauge
+		node.nodeType = NodeTypeGauge
 	default:
 		return fmt.Errorf("unknown keyword %q", kw) // unreachable — caller already filtered
 	}
@@ -516,6 +531,72 @@ func validateDef(tmpl map[string]any) error {
 		return fmt.Errorf("def: kind is not valid (def produces values into scope, not a Kubernetes resource)")
 	}
 	return nil
+}
+
+// prometheusMetricNameRe validates prometheus metric names per the prometheus
+// data model: [a-zA-Z_:][a-zA-Z0-9_:]*.
+var prometheusMetricNameRe = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
+
+// prometheusLabelNameRe validates prometheus label names: [a-zA-Z_][a-zA-Z0-9_]*.
+// Labels beginning with __ are reserved for internal use but we allow them
+// for flexibility.
+var prometheusLabelNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// validateGauge enforces shape rules for gauge: bodies.
+// Required: name (static prometheus metric name), expr (CEL expression → list).
+// Optional: labels (map of label name → CEL expression, per-item).
+func validateGauge(m map[string]any) (*GaugeBody, error) {
+	name, ok := m["name"].(string)
+	if !ok || name == "" {
+		return nil, fmt.Errorf("gauge: missing or empty name (prometheus metric name required)")
+	}
+	if !prometheusMetricNameRe.MatchString(name) {
+		return nil, fmt.Errorf("gauge: invalid metric name %q: must match [a-zA-Z_:][a-zA-Z0-9_:]*", name)
+	}
+
+	expr, ok := m["expr"].(string)
+	if !ok || expr == "" {
+		return nil, fmt.Errorf("gauge: missing or empty expr (CEL expression that returns a list required)")
+	}
+
+	// Validate no unexpected fields
+	for key := range m {
+		switch key {
+		case "name", "expr", "labels":
+			continue
+		default:
+			return nil, fmt.Errorf("gauge: unexpected field %q (allowed: name, expr, labels)", key)
+		}
+	}
+
+	gauge := &GaugeBody{
+		Name: name,
+		Expr: expr,
+	}
+
+	// Parse labels if present
+	if labelsRaw, ok := m["labels"]; ok {
+		labelsMap, ok := labelsRaw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("gauge: labels must be a map of label name to CEL expression, got %T", labelsRaw)
+		}
+		gauge.Labels = make(map[string]string, len(labelsMap))
+		for labelName, labelExpr := range labelsMap {
+			if !prometheusLabelNameRe.MatchString(labelName) {
+				return nil, fmt.Errorf("gauge: invalid label name %q: must match [a-zA-Z_][a-zA-Z0-9_]*", labelName)
+			}
+			exprStr, ok := labelExpr.(string)
+			if !ok {
+				return nil, fmt.Errorf("gauge: label %q value must be a string (CEL expression), got %T", labelName, labelExpr)
+			}
+			if exprStr == "" {
+				return nil, fmt.Errorf("gauge: label %q has empty expression", labelName)
+			}
+			gauge.Labels[labelName] = exprStr
+		}
+	}
+
+	return gauge, nil
 }
 
 // parseStringList extracts a validated []string from a map key that holds []any.

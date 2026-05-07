@@ -75,6 +75,7 @@ type GraphReconciler struct {
 	Watcher        *watches.WatchCoordinator  // nil = no dynamic watches (backward compat with existing tests)
 	Caches         *InstanceMap               // per-revision compiled expression caches
 	Scope          *scopeResolver             // nil = unknown scope; staticResourceKey falls back to namespace-substitution heuristic
+	Gauges         *GaugeStore                // per-controller gauge store; nil = gauges disabled
 }
 
 // reconcileScope bundles the per-reconcile identity context that threads
@@ -86,14 +87,19 @@ type reconcileScope struct {
 	// Pre-derived fields to avoid repeated calls.
 	name      string
 	namespace string
+	graphKey  string // "namespace/name" — used by gauge store
+	// Gauge store reference — persists across reconcile cycles.
+	gaugeStore *GaugeStore
 }
 
-func newReconcileScope(graph *unstructured.Unstructured, watcher *watches.GraphWatcher) *reconcileScope {
+func newReconcileScope(graph *unstructured.Unstructured, watcher *watches.GraphWatcher, gaugeStore *GaugeStore) *reconcileScope {
 	return &reconcileScope{
-		graph:     graph,
-		watcher:   watcher,
-		name:      graph.GetName(),
-		namespace: graph.GetNamespace(),
+		graph:      graph,
+		watcher:    watcher,
+		name:       graph.GetName(),
+		namespace:  graph.GetNamespace(),
+		graphKey:   graph.GetNamespace() + "/" + graph.GetName(),
+		gaugeStore: gaugeStore,
 	}
 }
 
@@ -182,7 +188,7 @@ func (r *GraphReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// -----------------------------------------------------------------------
 	// 7. Propagate the DAG
 	// -----------------------------------------------------------------------
-	rs := newReconcileScope(graph, watcher)
+	rs := newReconcileScope(graph, watcher, r.Gauges)
 	wp := r.reconcilePropagate(ctx, rs, rev.state, rev.eval, rev.dag, rev.plan)
 
 	// Post-propagation recompile check: if the propagation created a CRD, re-validate

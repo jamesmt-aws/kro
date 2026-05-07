@@ -70,6 +70,12 @@ const (
 	// scope as map[string]any. No resync timer, no applied-set entry,
 	// nothing to clean up.
 	NodeTypeDef
+	// NodeTypeGauge — a prometheus gauge driven by CEL evaluation. The
+	// node produces no Kubernetes resource and does not publish to scope.
+	// Its sole side-effect is emitting a prometheus gauge whose value is
+	// len(group) after slicing the source list by label dimensions.
+	// Propagation-driven: re-evaluates when upstream dependencies change.
+	NodeTypeGauge
 )
 
 // String returns the human-readable name of the NodeType for logging and display.
@@ -85,6 +91,8 @@ func (r NodeType) String() string {
 		return "watch"
 	case NodeTypeDef:
 		return "def"
+	case NodeTypeGauge:
+		return "gauge"
 	default:
 		return fmt.Sprintf("NodeType(%d)", int(r))
 	}
@@ -127,6 +135,28 @@ type ForEachBinding struct {
 	Expr    string // CEL expression yielding the collection
 }
 
+// GaugeBody holds the parsed body of a gauge: node. A gauge emits a
+// prometheus gauge whose value is len(group) after slicing the source list
+// by label dimensions. All fields use CEL expressions that reference scope.
+//
+//   - Name: prometheus metric name (static string, not CEL)
+//   - Expr: CEL expression that must evaluate to a list (the source)
+//   - Labels: map[labelName]CEL — per-item expressions that determine grouping
+//
+// The gauge value per dimension is always len(items_in_group). The label
+// expressions are evaluated with "item" bound to each element of the source
+// list.
+type GaugeBody struct {
+	Name   string            // prometheus gauge name (static)
+	Expr   string            // CEL expression → list (the source collection)
+	Labels map[string]string // label name → CEL expression (per-item, "item" bound)
+}
+
+// GaugeItemVar is the CEL variable name bound to each element of the source
+// list when evaluating gauge label expressions. Declared in the CEL
+// environment as dyn.
+const GaugeItemVar = "item"
+
 // Node is a parsed Graph node entry — a user's declaration of intent about
 // a Kubernetes resource (or collection of resources via forEach). Definition
 // nodes (declared via def:) put values into scope without creating resources.
@@ -168,6 +198,7 @@ type Node struct {
 	Ref      map[string]any // single-object reference (apiVersion + kind + metadata.name)
 	Watch    map[string]any // collection observation (apiVersion + kind + optional selector)
 	Def      map[string]any // Definition — computed values into scope, no K8s resource
+	Gauge    *GaugeBody     // gauge: — prometheus gauge driven by CEL evaluation
 
 	// TemplateExpr — CEL expression string that evaluates to the whole body
 	// map at runtime. Set when a body-producing keyword (template / patch /
@@ -296,7 +327,7 @@ func (n *Node) Payload() map[string]any {
 
 // HasBody returns true if the node has an evaluable body — either a
 // static map or a CEL expression that yields a map at runtime. Returns
-// false for Ref/Watch (identity-only).
+// false for Ref/Watch (identity-only) and Gauge (uses GaugeBody, not a map).
 func (n *Node) HasBody() bool {
 	return n.Payload() != nil || n.TemplateExpr != ""
 }
@@ -343,6 +374,10 @@ func (s *GraphSpec) AllIdentifiers() []string {
 		if node.ForEach != nil {
 			add(node.ForEach.VarName)
 		}
+		// Gauge label expressions use "item" as the per-element variable.
+		if node.Gauge != nil && len(node.Gauge.Labels) > 0 {
+			add(GaugeItemVar)
+		}
 	}
 	return ids
 }
@@ -377,6 +412,14 @@ func (s *GraphSpec) AllExpressions() []string {
 			templateStrings = append(templateStrings, node.TemplateExpr)
 		}
 		add(templateStrings)
+
+		// Gauge source expression and label expressions
+		if node.Gauge != nil {
+			add([]string{node.Gauge.Expr})
+			for _, labelExpr := range node.Gauge.Labels {
+				add([]string{labelExpr})
+			}
+		}
 
 		// ForEach collection expressions
 		if node.ForEach != nil {

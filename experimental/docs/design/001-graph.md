@@ -58,7 +58,7 @@ expressions. Must be an alphanumeric string (case-insensitive) and unique within
 
 #### type
 
-A node's type is the keyword it declares. Five types exist:
+A node's type is the keyword it declares. Six types exist:
 
 - **`template:`** — Template a Kubernetes resource. The controller creates the resource if it
   doesn't exist, applies changes when the template changes, and deletes the resource on prune.
@@ -71,6 +71,9 @@ A node's type is the keyword it declares. Five types exist:
   available to other nodes in this graph.
 - **`def:`** — Define raw data for use by other nodes in this graph. Def nodes do not read or write
   Kubernetes resources.
+- **`gauge:`** — Emit a prometheus gauge driven by CEL. Takes a list from scope (expr), optionally
+  groups by label dimensions (labels), and emits gauge value = count per group. Propagation-driven —
+  re-evaluates when upstream dependencies change. Does not publish to scope.
 
 ```yaml
 # def: — reusable naming values, no Kubernetes resource created
@@ -125,6 +128,14 @@ A node's type is the keyword it declares. Five types exist:
     kind: Pod
     selector:
       app: ${naming.prefix}
+
+# gauge: — emits a prometheus gauge counting Pods by phase
+- id: podsByPhase
+  gauge:
+    name: kro_pods_by_phase
+    expr: ${appPods}
+    labels:
+      phase: ${item.metadata.labels.phase}
 ```
 
 ## Dependencies

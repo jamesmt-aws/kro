@@ -104,6 +104,19 @@ func (c *clusterAccess) reconcileForEach(ctx context.Context, rs *reconcileScope
 		item := currentItems[id]
 
 		if !node.HasBody() {
+			// Gauge nodes don't have a map body (HasBody checks Payload/TemplateExpr).
+			// Handle gauge forEach inline — evaluate per child, accumulate labels.
+			if node.Type() == graphpkg.NodeTypeGauge {
+				innerScope := graphpkg.CopyScope(eval.scope)
+				innerScope[varName] = item
+				innerEval := eval.withScope(innerScope)
+				if err := reconcileForEachGaugeChild(ctx, node, innerEval, rs.gaugeStore, rs.graphKey); err != nil {
+					childErrors = append(childErrors, fmt.Errorf("forEach gauge %s item: %w", node.ID, err))
+					logger.V(1).Info("forEach gauge item error", "node", node.ID, "item", id, "error", err)
+				}
+				allApplied = append(allApplied, map[string]any{"__updated": true})
+				continue
+			}
 			continue
 		}
 		innerScope := graphpkg.CopyScope(eval.scope)

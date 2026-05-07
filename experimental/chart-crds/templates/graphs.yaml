@@ -82,6 +82,13 @@ spec:
                           puts values into scope. Value is a map of key-value
                           pairs or a CEL expression string.
                         x-kubernetes-preserve-unknown-fields: true
+                      gauge:
+                        description: >-
+                          Prometheus gauge driven by CEL. Takes a list from
+                          scope (expr), optionally groups by label dimensions,
+                          and emits gauge value = count per group.
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
                       forEach:
                         description: >-
                           Expands the node once per item in a collection.

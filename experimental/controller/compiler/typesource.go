@@ -98,6 +98,9 @@ func ResolveNodeTypes(nodes []graph.Node, schemaResolver resolver.SchemaResolver
 		switch {
 		case nodeType == graph.NodeTypeDef:
 			resolveDefType(node, ts)
+		case nodeType == graph.NodeTypeGauge:
+			// Gauge nodes don't publish to scope — declare as dyn for DAG participation.
+			ts.UntypedIDs = append(ts.UntypedIDs, node.ID)
 		case schemaResolver != nil:
 			resolveResourceSchema(node, ts, schemaResolver)
 		default:
@@ -110,6 +113,14 @@ func ResolveNodeTypes(nodes []graph.Node, schemaResolver resolver.SchemaResolver
 			if !seen[varName] {
 				seen[varName] = true
 				ts.UntypedIDs = append(ts.UntypedIDs, varName)
+			}
+		}
+
+		// Gauge label expressions use "item" as the per-element variable.
+		if node.Gauge != nil && len(node.Gauge.Labels) > 0 {
+			if !seen[graph.GaugeItemVar] {
+				seen[graph.GaugeItemVar] = true
+				ts.UntypedIDs = append(ts.UntypedIDs, graph.GaugeItemVar)
 			}
 		}
 	}

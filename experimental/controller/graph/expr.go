@@ -151,7 +151,7 @@ func ExtractReferencedPathsFromNode(
 }
 
 // collectBodyStrings gathers all strings from the node body, templateExpr,
-// includeWhen, and forEach that need expression scanning.
+// includeWhen, forEach, and gauge that need expression scanning.
 func collectBodyStrings(node Node) []string {
 	var strs []string
 	if body := node.Body(); body != nil {
@@ -165,6 +165,12 @@ func collectBodyStrings(node Node) []string {
 	}
 	if node.ForEach != nil {
 		strs = append(strs, node.ForEach.Expr)
+	}
+	if node.Gauge != nil {
+		strs = append(strs, node.Gauge.Expr)
+		for _, labelExpr := range node.Gauge.Labels {
+			strs = append(strs, labelExpr)
+		}
 	}
 	return strs
 }
